@@ -1,0 +1,162 @@
+import asyncio
+import logging
+import os
+import signal
+import sys
+import websockets
+import json
+import sherpa_onnx
+import numpy as np
+import array
+import time
+
+HOST = "0.0.0.0"
+PORT = int(os.environ.get("PORT", 8080))
+
+RECOGNIZER_MODEL_PATH = os.environ.get("RECOGNIZER_MODEL_PATH", "v2_ctc.onnx")
+RECOGNIZER_TOKENS_PATH = os.environ.get("RECOGNIZER_TOKENS_PATH", "tokens.txt")
+
+VAD_MODEL_PATH = os.environ.get("VAD_MODEL_PATH", "silero_vad.onnx")
+VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.3"))
+VAD_MIN_SILENCE_DURATION = float(os.environ.get("VAD_MIN_SILENCE_DURATION", "1"))
+VAD_MIN_SPEECH_DURATION = float(os.environ.get("VAD_MIN_SPEECH_DURATION", "0.25"))
+VAD_MAX_SPEECH_DURATION = float(os.environ.get("VAD_MAX_SPEECH_DURATION", "8"))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+base_sample_rate = 16000
+
+recognizer = None
+
+def create_recognizer() -> sherpa_onnx.OfflineRecognizer:
+    return sherpa_onnx.OfflineRecognizer.from_nemo_ctc(
+        model=RECOGNIZER_MODEL_PATH,
+        tokens=RECOGNIZER_TOKENS_PATH,
+        debug=False,
+    )
+
+def create_vad():
+    config = sherpa_onnx.VadModelConfig()
+    config.silero_vad.model = VAD_MODEL_PATH
+    config.silero_vad.threshold = VAD_THRESHOLD
+    config.silero_vad.min_silence_duration = VAD_MIN_SILENCE_DURATION
+    config.silero_vad.min_speech_duration = VAD_MIN_SPEECH_DURATION
+    config.silero_vad.max_speech_duration = VAD_MAX_SPEECH_DURATION
+    config.sample_rate = base_sample_rate
+
+    window_size = config.silero_vad.window_size
+
+    vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=100)
+    return (vad, window_size)
+
+async def transcribe(websocket) -> None:
+    global recognizer
+
+    config_message = json.loads(await websocket.recv())
+    sample_rate = config_message['sample_rate']
+    if sample_rate != base_sample_rate:
+        logging.warn(f"sample rate mismatch, expected {base_sample_rate}, got {sample_rate}")
+        await websocket.close()
+        return
+
+    logging.info("creating vad")
+
+    vad, window_size = create_vad()
+    buffer = []
+    started = False
+    started_time = None
+    offset = 0
+
+    logging.info("vad created")
+
+    current_time = 0
+
+    async for message in websocket:
+        if type(message) is str:
+            continue
+
+        samples = np.array(array.array('h', message)) / 32767.0
+
+        buffer = np.concatenate([buffer, samples])
+        while offset + window_size < len(buffer):
+            vad.accept_waveform(buffer[offset : offset + window_size])
+            if not started and vad.is_speech_detected():
+                started = True
+                started_time = current_time
+            offset += window_size
+
+        if not started:
+            if len(buffer) > 10 * window_size:
+                offset -= len(buffer) - 10 * window_size
+                buffer = buffer[-10 * window_size :]
+
+        if started and current_time - started_time > 0.2:
+            stream = recognizer.create_stream()
+            stream.accept_waveform(sample_rate, buffer)
+            recognizer.decode_stream(stream)
+            text = stream.result.text.strip()
+            if text:
+                logging.info(f"recognized text: '{text}'")
+                await websocket.send(json.dumps({
+                    "end_of_utt": False,
+                    "text": text
+                }))
+
+            started_time = current_time
+
+        while not vad.empty():
+            stream = recognizer.create_stream()
+            stream.accept_waveform(sample_rate, vad.front.samples)
+
+            vad.pop()
+            recognizer.decode_stream(stream)
+
+            text = stream.result.text.strip()
+
+            logging.info(f"final recognized text: '{text}'")
+            await websocket.send(json.dumps({
+                "end_of_utt": True,
+                "text": text
+            }))
+
+            buffer = []
+            offset = 0
+            started = False
+            started_time = None
+
+            await websocket.close()
+            return
+
+        current_time += len(samples) / base_sample_rate
+
+async def _windows_cancel(stop_event: asyncio.Event) -> None:
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except KeyboardInterrupt:
+        stop_event.set()
+
+async def main() -> None:
+    global recognizer
+    logging.info("creating recognizer")
+    recognizer = create_recognizer()
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    if sys.platform != "win32":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+    else:
+        loop.create_task(_windows_cancel(stop))
+
+    async with websockets.serve(transcribe, HOST, PORT):
+        logging.info("started on :%d", PORT)
+        await stop.wait()
+
+if __name__ == "__main__":
+    asyncio.run(main())
