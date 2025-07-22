@@ -86,6 +86,8 @@ async def transcribe(websocket) -> None:
 
     current_time = 0
 
+    overall_buffer = []
+
     async for message in websocket:
         if type(message) is str:
             continue
@@ -93,6 +95,8 @@ async def transcribe(websocket) -> None:
         samples = np.array(array.array('h', message)) / 32767.0
 
         buffer = np.concatenate([buffer, samples])
+        overall_buffer = np.concatenate([overall_buffer, samples])
+
         while offset + window_size < len(buffer):
             vad.accept_waveform(buffer[offset : offset + window_size])
             if not started and vad.is_speech_detected():
@@ -130,7 +134,7 @@ async def transcribe(websocket) -> None:
             text = stream.result.text.strip()
 
             logging.info(f"final recognized text: '{text}'")
-            save_buffer(buffer)
+            save_buffer(overall_buffer)
             await websocket.send(json.dumps({
                 "end_of_utt": True,
                 "text": text
@@ -146,7 +150,7 @@ async def transcribe(websocket) -> None:
 
         current_time += len(samples) / base_sample_rate
 
-    save_buffer(buffer)
+    save_buffer(overall_buffer)
 
 async def _windows_cancel(stop_event: asyncio.Event) -> None:
     try:
