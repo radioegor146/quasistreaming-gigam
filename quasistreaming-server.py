@@ -15,6 +15,8 @@ import uuid
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", 8080))
 
+INPUT_GAIN = float(os.environ.get("INPUT_GAIN", "1"))
+
 RECOGNIZER_MODEL_PATH = os.environ.get("RECOGNIZER_MODEL_PATH", "v2_ctc.onnx")
 RECOGNIZER_TOKENS_PATH = os.environ.get("RECOGNIZER_TOKENS_PATH", "tokens.txt")
 
@@ -92,7 +94,7 @@ async def transcribe(websocket) -> None:
         if type(message) is str:
             continue
 
-        samples = np.array(array.array('h', message)) / 32767.0
+        samples = np.array(array.array('h', message)) / 32767.0 * INPUT_GAIN
 
         buffer = np.concatenate([buffer, samples])
         overall_buffer = np.concatenate([overall_buffer, samples])
