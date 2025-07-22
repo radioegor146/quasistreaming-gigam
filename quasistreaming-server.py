@@ -96,6 +96,7 @@ async def transcribe(websocket) -> None:
         while offset + window_size < len(buffer):
             vad.accept_waveform(buffer[offset : offset + window_size])
             if not started and vad.is_speech_detected():
+                logging.info("speech started")
                 started = True
                 started_time = current_time
             offset += window_size
