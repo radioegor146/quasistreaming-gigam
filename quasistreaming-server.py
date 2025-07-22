@@ -57,12 +57,12 @@ def create_vad():
     vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=100)
     return (vad, window_size)
 
-def save_buffer(buffer):
+def save_buffer(samples):
     if LOG_PATH is None:
         return
     path = f"{uuid.uuid4()}.wav"
-    sf.write(os.path.join(LOG_PATH, path), data, base_sample_rate)
-    logging.info(f"saved buffer to {path}")
+    sf.write(os.path.join(LOG_PATH, path), samples, base_sample_rate)
+    logging.info(f"saved samples to {path}")
 
 async def transcribe(websocket) -> None:
     global recognizer
@@ -129,6 +129,7 @@ async def transcribe(websocket) -> None:
             text = stream.result.text.strip()
 
             logging.info(f"final recognized text: '{text}'")
+            save_buffer(buffer)
             await websocket.send(json.dumps({
                 "end_of_utt": True,
                 "text": text
@@ -140,7 +141,6 @@ async def transcribe(websocket) -> None:
             started_time = None
 
             await websocket.close()
-            save_buffer(buffer)
             return
 
         current_time += len(samples) / base_sample_rate
