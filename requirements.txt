@@ -1,3 +1,4 @@
 websockets
 sherpa_onnx
 numpy
+soundfile

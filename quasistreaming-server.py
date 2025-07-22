@@ -9,6 +9,8 @@ import sherpa_onnx
 import numpy as np
 import array
 import time
+import soundfile as sf
+import uuid
 
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", 8080))
@@ -21,6 +23,8 @@ VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.3"))
 VAD_MIN_SILENCE_DURATION = float(os.environ.get("VAD_MIN_SILENCE_DURATION", "1"))
 VAD_MIN_SPEECH_DURATION = float(os.environ.get("VAD_MIN_SPEECH_DURATION", "0.25"))
 VAD_MAX_SPEECH_DURATION = float(os.environ.get("VAD_MAX_SPEECH_DURATION", "8"))
+
+LOG_PATH = os.environ.get("LOG_PATH")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +56,13 @@ def create_vad():
 
     vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=100)
     return (vad, window_size)
+
+def save_buffer(buffer):
+    if LOG_PATH is None:
+        return
+    path = f"{uuid.uuid4()}.wav"
+    sf.write(os.path.join(LOG_PATH, path), data, base_sample_rate)
+    logging.info(f"saved buffer to {path}")
 
 async def transcribe(websocket) -> None:
     global recognizer
@@ -129,9 +140,12 @@ async def transcribe(websocket) -> None:
             started_time = None
 
             await websocket.close()
+            save_buffer(buffer)
             return
 
         current_time += len(samples) / base_sample_rate
+
+    save_buffer(buffer)
 
 async def _windows_cancel(stop_event: asyncio.Event) -> None:
     try:
