@@ -90,6 +90,8 @@ async def transcribe(websocket) -> None:
 
     overall_buffer = []
 
+    texts = []
+
     async for message in websocket:
         if type(message) is str:
             continue
@@ -118,11 +120,17 @@ async def transcribe(websocket) -> None:
             recognizer.decode_stream(stream)
             text = stream.result.text.strip()
             if text:
+                texts.append(text)
                 logging.info(f"recognized text: '{text}'")
+
+                end_of_utt = len(texts) > 3 and texts[-1] == texts[-2] and texts[-2] == texts[-3]:
+
                 await websocket.send(json.dumps({
-                    "end_of_utt": False,
+                    "end_of_utt": end_of_utt,
                     "text": text
                 }))
+                if end_of_utt:
+                    break
 
             started_time = current_time
 
