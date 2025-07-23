@@ -123,7 +123,7 @@ async def transcribe(websocket) -> None:
                 texts.append(text)
                 logging.info(f"recognized text: '{text}'")
 
-                end_of_utt = len(texts) > 3 and texts[-1] == texts[-2] and texts[-2] == texts[-3]:
+                end_of_utt = len(texts) > 3 and texts[-1] == texts[-2] and texts[-2] == texts[-3]
 
                 await websocket.send(json.dumps({
                     "end_of_utt": end_of_utt,
